@@ -1,4 +1,7 @@
 
+-- Срезы данных в SQL, агрегирующие функции, подзапросы и временные таблицы
+
+
 SELECT funding_total
 FROM company
 WHERE category_code = 'news' AND country_code = 'USA'
