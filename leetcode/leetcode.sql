@@ -1,5 +1,5 @@
 
--- Пример решения задач с leetcode
+-- Пример решения задач на leetcode
 
 SELECT request_at as Day, round(sum(if(status = "cancelled_by_driver" or status = "cancelled_by_client", 1,0 )) / COUNT(id) ,2) as "Cancellation Rate"
 FROM Trips 
