@@ -18,6 +18,20 @@ WHERE salary < (SELECT MAX(salary)
 
 --
 
+SELECT id 
+FROM (
+  SELECT id, 
+    temperature, 
+    recordDate,
+  lag(temperature) over(ORDER BY recordDate) AS prevTemp,
+  lag(recordDate) over(ORDER BY recordDate) AS prevDate
+  FROM Weather
+) AS T
+WHERE T.temperature > T.prevTemp
+      and datediff(T.recordDate, T.prevDate)=1;
+      
+--
+
 SELECT * 
 FROM patients 
 WHERE conditions LIKE '% DIAB1%' 
