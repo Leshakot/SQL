@@ -1,6 +1,57 @@
 -- Пример решения задач SQL
 
----- ОКОННЫЕ ФУНКЦИИ 
+--- АНАЛИЗ ПРОДУКТОВЫХ МЕТРИК
+with f5 as (SELECT date as dd,
+                   sum(revenue) OVER (ORDER BY date) as total_revenue,
+                   *
+            FROM   (SELECT creation_time::date as date,
+                           sum(price) as revenue
+                    FROM   (SELECT order_id,
+                                   creation_time,
+                                   unnest(product_ids) as product_id
+                            FROM   orders
+                            WHERE  order_id not in (SELECT order_id
+                                                    FROM   user_actions
+                                                    WHERE  action = 'cancel_order')) t1
+                        LEFT JOIN products using(product_id)
+                    GROUP BY date) as t2 full join (SELECT date,
+                                                   sum(count) OVER(ORDER BY date) as all_users
+                                            FROM   (SELECT date,
+                                                           count(user_id)
+                                                    FROM   (SELECT user_id,
+                                                                   min(time) :: date as date
+                                                            FROM   user_actions
+                                                            GROUP BY user_id) as t3
+                                                    GROUP BY date
+                                                    ORDER BY 1) as t4) as f1 using(date) full join (SELECT date,
+                                                                   sum(count) OVER(ORDER BY date) as revenue_users
+                                                            FROM   (SELECT date,
+                                                                           count(user_id)
+                                                                    FROM   (SELECT user_id,
+                                                                                   min(time) :: date as date
+                                                                            FROM   user_actions
+                                                                            WHERE  order_id not in (SELECT order_id
+                                                                                                    FROM   user_actions
+                                                                                                    WHERE  action = 'cancel_order')
+                                                                            GROUP BY user_id) as t3
+                                                                    GROUP BY date
+                                                                    ORDER BY 1) as t4) as f2 using(date) full join (SELECT date,
+                                                                   sum(count) OVER (ORDER BY date) as total_orders
+                                                            FROM   (SELECT creation_time :: date as date,
+                                                                           count(order_id)
+                                                                    FROM   orders
+                                                                    WHERE  order_id not in (SELECT order_id
+                                                                                            FROM   user_actions
+                                                                                            WHERE  action = 'cancel_order')
+                                                                    GROUP BY date) as t5) as f3 using(date))
+SELECT date,
+       round(total_revenue / all_users * 1.0, 2) as running_arpu,
+       round(total_revenue / revenue_users * 1.0, 2) as running_arppu,
+       round(total_revenue / total_orders * 1.0, 2) as running_aov
+FROM   f5
+
+---- 
+  
 with t2 as (SELECT creation_time :: date as date,
                    sum(price) as daily_revenue
             FROM   (SELECT order_id,
@@ -19,7 +70,143 @@ SELECT date,
        coalesce(round((daily_revenue - lag(daily_revenue, 1) OVER(ORDER BY date)) / (lead(daily_revenue, -1) OVER(ORDER BY date)) * 100, 1),
                 0) as revenue_growth_percentage
 FROM   t2
+  
+----
+  
+SELECT date,
+       revenue,
+       sum(revenue) OVER (ORDER BY date) as total_revenue,
+       round(100 * (revenue * 1.0 - lag(revenue) OVER (ORDER BY date)) / lag(revenue) OVER (ORDER BY date),
+             2) as revenue_change
+FROM   (SELECT date,
+               sum(price) as revenue FROM(SELECT creation_time :: date as date,
+                                          unnest(array[product_ids]) as product_id
+                                   FROM   orders
+                                   WHERE  order_id not in (SELECT order_id
+                                                           FROM   user_actions
+                                                           WHERE  action = 'cancel_order')) as t1
+            LEFT JOIN products using(product_id)
+        GROUP BY date) as t2
+ORDER BY date
 
+----
+SELECT date,
+       orders,
+       first_orders,
+       new_users_orders :: int,
+       round(first_orders / orders :: numeric * 100, 2) as first_orders_share,
+       round(new_users_orders / orders :: numeric * 100,
+                                                                                           2) as new_users_orders_share FROM(SELECT time :: date as date,
+                                         count(user_id) as orders
+                                  FROM   user_actions
+                                  WHERE  order_id not in (SELECT order_id
+                                                          FROM   user_actions
+                                                          WHERE  action = 'cancel_order')
+                                  GROUP BY date) as t4
+    LEFT JOIN (SELECT date_min,
+                      count(user_id) as first_orders
+               FROM   (SELECT min(time :: date) as date_min,
+                              user_id
+                       FROM   user_actions
+                       WHERE  order_id not in (SELECT order_id
+                                               FROM   user_actions
+                                               WHERE  action = 'cancel_order')
+                       GROUP BY user_id) as t1
+               GROUP BY date_min) t5
+        ON t4.date = t5.date_min
+    LEFT JOIN (SELECT first_date,
+                      sum(coalesce(count, 0)) as new_users_orders
+               FROM   (SELECT min(time::date) as first_date,
+                              user_id
+                       FROM   user_actions
+                       GROUP BY user_id) t2
+                   LEFT JOIN (SELECT time :: date as date1,
+                                     user_id,
+                                     count(order_id)
+                              FROM   user_actions
+                              WHERE  order_id not in (SELECT order_id
+                                                      FROM   user_actions
+                                                      WHERE  action = 'cancel_order')
+                              GROUP BY user_id, date1) as t3
+                       ON t2.user_id = t3.user_id and
+                          t2.first_date = t3.date1
+               GROUP BY first_date) t6
+        ON t4.date = t6.first_date
+ORDER BY date
+
+----
+
+with user_t as(SELECT user_id,
+                      date_trunc('day', min(time)) as date
+               FROM   user_actions
+               GROUP BY user_id
+               ORDER BY date), t as (SELECT count(user_id) as new_users,
+                             date
+                      FROM   user_t
+                      GROUP BY date), courier_t as(SELECT courier_id,
+                                    date_trunc('day', min(time)) as date
+                             FROM   courier_actions
+                             GROUP BY courier_id
+                             ORDER BY date), t2 as (SELECT count(courier_id) as new_couriers,
+                              date as date1
+                       FROM   courier_t
+                       GROUP BY date), t3 as (SELECT t.date ::date ,
+                              new_users,
+                              new_couriers,
+                              cast(sum(new_users) OVER(ORDER BY t.date) as int) as total_users,
+                              cast(sum(new_couriers) OVER(ORDER BY date) as int) as total_couriers,
+                              round((new_users::numeric - lag(new_users) OVER (ORDER BY t.date)) / (lag(new_users) OVER (ORDER BY t.date)) * 100,
+                                    2) as new_users_change,
+                              round((new_couriers::numeric - lag(new_couriers) OVER (ORDER BY t.date)) / (lag(new_couriers) OVER (ORDER BY t.date)) * 100,
+                                    2) as new_couriers_change
+                       FROM   t full join t2
+                               ON t.date = t2.date1)
+SELECT date,
+       new_users,
+       new_couriers,
+       total_users,
+       total_couriers,
+       new_users_change,
+       new_couriers_change,
+       round((total_users::numeric - lag(total_users) OVER (ORDER BY date)) / lag(total_users) OVER (ORDER BY date) * 100,
+             2) as total_users_growth,
+       round((total_couriers::numeric - lag(total_couriers) OVER (ORDER BY date)) / lag(total_couriers) OVER (ORDER BY date) * 100,
+             2) as total_couriers_growth
+FROM   t3
+  
+----   ОКОННЫЕ ФУНКЦИИ 
+  
+with t2 as (SELECT date,
+                   sum(price) as revenue FROM(SELECT creation_time :: date as date,
+                                              unnest(array[product_ids]) as product_id
+                                       FROM   orders
+                                       WHERE  order_id not in (SELECT order_id
+                                                               FROM   user_actions
+                                                               WHERE  action = 'cancel_order')) as t1
+                LEFT JOIN products using(product_id)
+            GROUP BY date), t3 as (SELECT time :: date as date,
+                              count(distinct user_id) as all_order
+                       FROM   user_actions
+                       GROUP BY date), t4 as (SELECT time :: date as date,
+                              count(distinct user_id) as good_order
+                       FROM   user_actions
+                       WHERE  order_id not in (SELECT order_id
+                                               FROM   user_actions
+                                               WHERE  action = 'cancel_order')
+                       GROUP BY date), t5 as (SELECT creation_time :: date as date,
+                              count(distinct order_id) as ord
+                       FROM   orders
+                       WHERE  order_id not in (SELECT order_id
+                                               FROM   user_actions
+                                               WHERE  action = 'cancel_order')
+                       GROUP BY date)
+SELECT date,
+       round(revenue :: numeric / all_order, 2) as arpu,
+       round(revenue :: numeric / good_order, 2) as arppu,
+       round(revenue :: numeric / ord, 2) as aov
+FROM   t2 full join t3 using(date) full join t4 using(date) full join t5 using(date)
+
+  
 ----
 with t2 as (SELECT order_id,
                    creation_time,
